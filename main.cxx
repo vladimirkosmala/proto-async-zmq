@@ -18,51 +18,51 @@
 //  run several client tasks in parallel, each with a different random ID.
 //  Attention! -- this random work well only on linux.
 
-class client_task {
+class ClientTask {
 public:
-  client_task()
-    : ctx_(1),
-      client_socket_(ctx_, ZMQ_DEALER),
-      thread_(std::bind(&client_task::start, this))
+  ClientTask()
+    : mCtx(1),
+      mClientSocket(mCtx, ZMQ_DEALER),
+      mThread(std::bind(&ClientTask::start, this))
   {}
 
-  ~client_task() {
-    run_ = false;
+  ~ClientTask() {
+    mRun = false;
     std::cout << "ending client" << std::endl;
-    // client_socket_.~socket_t();
-    // ctx_.~context_t();
-    // thread_.join();
+    // mClientSocket.~socket_t();
+    // mCtx.~context_t();
+    // mThread.join();
   }
 
   void start() {
-    run_ = true;
+    mRun = true;
     // generate random identity
     char identity[10] = {};
     sprintf(identity, "%04X-%04X", within(0x10000), within(0x10000));
     std::cout << "  start client '" << identity << "'" << std::endl;
-    client_socket_.setsockopt(ZMQ_IDENTITY, identity, strlen(identity));
-    client_socket_.setsockopt(ZMQ_RCVTIMEO, 2000);
-    client_socket_.setsockopt(ZMQ_SNDTIMEO, 2000);
-    client_socket_.connect("tcp://localhost:5570");
+    mClientSocket.setsockopt(ZMQ_IDENTITY, identity, strlen(identity));
+    mClientSocket.setsockopt(ZMQ_RCVTIMEO, 2000);
+    mClientSocket.setsockopt(ZMQ_SNDTIMEO, 2000);
+    mClientSocket.connect("tcp://localhost:5570");
 
-    zmq::pollitem_t items[] = {client_socket_, 0, ZMQ_POLLIN, 0};
-    int request_nbr = 0;
+    zmq::pollitem_t items[] = {mClientSocket, 0, ZMQ_POLLIN, 0};
+    int requestNbr = 0;
     try {
       while (true) {
-        if (!run_) {
+        if (!mRun) {
           return;
         }
 
         s_sleep(1000);
 
-        if (!run_) {
+        if (!mRun) {
           return;
         }
 
-        char request_string[16] = {};
-        sprintf(request_string, "agent/obj%d", ++request_nbr);
-        s_send(client_socket_, request_string);
-        std::string message = s_recv(client_socket_);
+        char requestString[16] = {};
+        sprintf(requestString, "agent/obj%d", ++requestNbr);
+        s_send(mClientSocket, requestString);
+        std::string message = s_recv(mClientSocket);
         std::cout << "CLIENT " << identity << ": received response '" << message << "'" << std::endl;
       }
     }
@@ -72,10 +72,10 @@ public:
   }
 
 private:
-  zmq::context_t ctx_;
-  zmq::socket_t client_socket_;
-  std::thread thread_;
-  bool run_;
+  zmq::context_t mCtx;
+  zmq::socket_t mClientSocket;
+  std::thread mThread;
+  bool mRun;
 };
 
 //  Each worker task works on one request at a time and sends a random number
@@ -89,38 +89,38 @@ const std::string code200("200");
 const std::string code404("404");
 const std::string code500("500");
 
-class server_worker {
+class ServerWorker {
 public:
-  server_worker(zmq::context_t &ctx)
-    : ctx_(ctx),
-      worker_socket_(ctx_, ZMQ_DEALER),
-      thread_(std::bind(&server_worker::start, this))
+  ServerWorker(zmq::context_t &ctx)
+    : mCtx(ctx),
+      mWorkerSocket(mCtx, ZMQ_DEALER),
+      mThread(std::bind(&ServerWorker::start, this))
   {}
 
-  ~server_worker() {
-    run_ = false;
+  ~ServerWorker() {
+    mRun = false;
     std::cout << "ending worker" << std::endl;
-    thread_.join();
+    mThread.join();
   }
 
   void start() {
-    run_ = true;
-    worker_socket_.setsockopt(ZMQ_RCVTIMEO, 200);
-    worker_socket_.connect("inproc://backend");
+    mRun = true;
+    mWorkerSocket.setsockopt(ZMQ_RCVTIMEO, 200);
+    mWorkerSocket.connect("inproc://backend");
 
     try {
       while (true) {
-        if (!run_) {
+        if (!mRun) {
           return;
         }
 
-        std::string identity = s_recv(worker_socket_);
+        std::string identity = socketReceive();
         if (identity.empty()) {
           // empty or timeout
           continue;
         }
 
-        std::string payload = s_recv(worker_socket_);
+        std::string payload = socketReceive();
         if (payload.empty()) {
           // empty or timeout
           continue;
@@ -128,11 +128,10 @@ public:
 
         std::cout << "WORKER: received request '" << payload << "' from '" << identity << "'" << std::endl;
 
-        std::string response = handle_request(payload);
+        std::string response = handleRequest(payload);
 
         // always success to send because of inproc communication
-        s_sendmore(worker_socket_, identity);
-        s_send(worker_socket_, response);
+        socketSend(identity, response);
       }
     }
     catch (std::exception &e) {
@@ -140,7 +139,7 @@ public:
     }
   }
 
-  std::string handle_request(std::string request) {
+  std::string handleRequest(std::string request) {
     s_sleep(within(1000) + 1);
     switch (within(3)) {
       case 0:
@@ -157,9 +156,9 @@ public:
   }
 
   //  Receive 0MQ string from socket and convert into string
-  static std::string s_recv(zmq::socket_t & socket) {
+  std::string socketReceive() {
     zmq::message_t message;
-    bool received = socket.recv(&message);
+    bool received = mWorkerSocket.recv(&message);
     if (!received) {
       // timeout
       return empty;
@@ -168,26 +167,23 @@ public:
   }
 
   //  Sends string as 0MQ string, as multipart non-terminal
-  static bool s_sendmore(zmq::socket_t & socket, const std::string & string) {
-    zmq::message_t message(string.size());
-    memcpy(message.data(), string.data(), string.size());
+  bool socketSend(const std::string & identity, const std::string & payload) {
+    zmq::message_t identityMessage(identity.size());
+    memcpy(identityMessage.data(), identity.data(), identity.size());
 
-    return socket.send(message, ZMQ_SNDMORE);
-  }
+    mWorkerSocket.send(identityMessage, ZMQ_SNDMORE);
 
-  //  Convert string to 0MQ string and send to socket
-  static bool s_send(zmq::socket_t & socket, const std::string & string) {
-    zmq::message_t message(string.size());
-    memcpy(message.data(), string.data(), string.size());
+    zmq::message_t payloadMessage(payload.size());
+    memcpy(payloadMessage.data(), payload.data(), payload.size());
 
-    return socket.send(message);
+    return mWorkerSocket.send(payloadMessage);
   }
 
 private:
-  zmq::context_t &ctx_;
-  zmq::socket_t worker_socket_;
-  std::thread thread_;
-  bool run_;
+  zmq::context_t &mCtx;
+  zmq::socket_t mWorkerSocket;
+  std::thread mThread;
+  bool mRun;
 };
 
 //  This is our server task.
@@ -196,54 +192,54 @@ private:
 //  one request at a time but one client can talk to multiple workers at
 //  once.
 
-class server_task {
+class ServerTask {
 public:
-  server_task(uint8_t num_threads)
-    : ctx_(1),
-      num_threads_(num_threads),
-      frontend_(ctx_, ZMQ_ROUTER),
-      backend_(ctx_, ZMQ_DEALER),
-      thread_(std::bind(&server_task::start, this))
+  ServerTask(uint8_t num_threads)
+    : mCtx(1),
+      mNumThreads(num_threads),
+      mFrontend(mCtx, ZMQ_ROUTER),
+      mBackend(mCtx, ZMQ_DEALER),
+      mThread(std::bind(&ServerTask::start, this))
   {}
 
-  ~server_task() {
+  ~ServerTask() {
     std::cout << "ending server task" << std::endl;
-    frontend_.~socket_t();
-    backend_.~socket_t();
-    ctx_.~context_t();
-    thread_.join();
+    mFrontend.~socket_t();
+    mBackend.~socket_t();
+    mCtx.~context_t();
+    mThread.join();
   }
 
   void start() {
     std::cout << "server binding frontend and backend" << std::endl;
-    frontend_.bind("tcp://127.0.0.1:5570");
-    backend_.bind("inproc://backend");
-    std::vector<server_worker *> workers;
+    mFrontend.bind("tcp://127.0.0.1:5570");
+    mBackend.bind("inproc://backend");
+    std::vector<ServerWorker *> workers;
 
     std::cout << "server deploying threads and workers..." << std::endl;
-    for (int i = 0; i < num_threads_; ++i) {
+    for (int i = 0; i < mNumThreads; ++i) {
       printf("  start worker %d\n", i);
-      server_worker *worker = new server_worker(ctx_);
+      ServerWorker *worker = new ServerWorker(mCtx);
       workers.push_back(worker);
     }
 
     try {
-      zmq::proxy(frontend_, backend_, nullptr);
+      zmq::proxy(mFrontend, mBackend, nullptr);
     }
     catch (std::exception &e) {}
 
-    for (int i = 0; i < num_threads_; ++i) {
+    for (int i = 0; i < mNumThreads; ++i) {
       puts("deleting workers");
       delete workers[i];
     }
   }
 
 private:
-  zmq::context_t ctx_;
-  zmq::socket_t frontend_;
-  zmq::socket_t backend_;
-  std::thread thread_;
-  uint8_t num_threads_;
+  zmq::context_t mCtx;
+  zmq::socket_t mFrontend;
+  zmq::socket_t mBackend;
+  std::thread mThread;
+  uint8_t mNumThreads;
 };
 
 //  The main thread simply starts several clients and a server, and then
@@ -254,10 +250,10 @@ int main(void)
   std::cout << "Starting..." << std::endl;
 
   {
-    client_task ct1;
-    client_task ct2;
-    client_task ct3;
-    server_task st(5);
+    ClientTask clientTask1;
+    ClientTask clientTask2;
+    ClientTask clientTask3;
+    ServerTask serverTask(5);
 
     getchar();
   }
