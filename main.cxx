@@ -206,7 +206,7 @@ public:
     std::cout << "ending server task" << std::endl;
     mFrontend.~socket_t();
     mBackend.~socket_t();
-    mCtx.~context_t();
+    mCtx.~context_t(); // releases zmq::proxy call
     mThread.join();
   }
 
@@ -214,24 +214,19 @@ public:
     std::cout << "server binding frontend and backend" << std::endl;
     mFrontend.bind("tcp://127.0.0.1:5570");
     mBackend.bind("inproc://backend");
-    std::vector<ServerWorker *> workers;
+    std::vector<std::unique_ptr<ServerWorker>> workers;
 
     std::cout << "server deploying threads and workers..." << std::endl;
     for (int i = 0; i < mNumThreads; ++i) {
       printf("  start worker %d\n", i);
       ServerWorker *worker = new ServerWorker(mCtx);
-      workers.push_back(worker);
+      workers.push_back(std::unique_ptr<ServerWorker>(worker));
     }
 
     try {
       zmq::proxy(mFrontend, mBackend, nullptr);
     }
     catch (std::exception &e) {}
-
-    for (int i = 0; i < mNumThreads; ++i) {
-      puts("deleting workers");
-      delete workers[i];
-    }
   }
 
 private:
